@@ -174,8 +174,10 @@ class DbManager:
             with self.pg_connection:
                 with self.pg_connection.cursor() as cursor:
                     self._update_users(cursor, entries)
+                    self._remove_absent_users(cursor, entries) #Новый метод, для удаления
                     self._update_groups(cursor)
                     self._update_users_in_groups(cursor, entries)
+
             logging.info("Database update completed successfully")
         except Exception as e:
             logging.error(f"Failed to update database: {e}")
@@ -234,6 +236,34 @@ class DbManager:
                                 VALUES (%s, %s)
                                 ON CONFLICT (user_guid, group_guid) DO NOTHING;
                             """, (str(user_guid), str(group_guid)))
+
+    def _remove_absent_users(self, cursor, entries):
+        # Получаем GUID всех пользователей, которые будут добавлены или обновлены
+        existing_guids = {str(self._parse_guid(entry.objectGUID.value, "user")) for entry in entries if
+                          entry.objectGUID and entry.objectGUID.value}
+
+        # Получаем GUID всех пользователей в базе данных
+        cursor.execute("SELECT guid FROM Users;")
+        db_guids = {row[0] for row in cursor.fetchall()}
+
+        # Логируем полученные GUID
+        #TODO: Проверь логи
+        logging.info(f"Existing GUIDs from AD: {existing_guids}")
+        logging.info(f"GUIDs in database: {db_guids}")
+
+        # Находим пользователей, которые есть в базе данных, но отсутствуют в новых данных
+        users_to_delete = db_guids - existing_guids
+
+        # Логируем пользователей, которые будут удалены
+        logging.info(f"Users to delete: {users_to_delete}")
+
+        for user_guid in users_to_delete:
+            logging.info(f"Deleting user - {user_guid}")
+            # Сначала удаляем связи пользователя с группами
+            cursor.execute("DELETE FROM UsersInGroups WHERE user_guid = %s;", (str(user_guid),))
+            # Затем удаляем самого пользователя
+            cursor.execute("DELETE FROM Users WHERE guid = %s;", (str(user_guid),))
+
 
     @staticmethod
     def _parse_guid(guid_value, entity_type):
